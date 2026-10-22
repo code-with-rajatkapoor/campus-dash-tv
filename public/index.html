@@ -108,6 +108,12 @@
       display: flex;
       align-items: center;
       gap: 10px;
+      transition: all 0.3s ease;
+    }
+
+    .alexa-bar:hover {
+      border-color: var(--accent);
+      color: var(--text-main);
     }
 
     .status-widgets {
@@ -148,7 +154,6 @@
       transition: all 0.2s cubic-bezier(0.2, 0, 0, 1);
     }
 
-    /* D-PAD FOCUS HIGHLIGHT */
     .card.focused {
       border: 3px solid var(--accent);
       box-shadow: 0 0 30px var(--accent-glow), inset 0 0 15px var(--accent-glow);
@@ -243,6 +248,50 @@
       font-size: 11px;
     }
 
+    /* VOICE AI OVERLAY */
+    #voiceOverlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.95);
+      backdrop-filter: blur(20px);
+      display: none;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      z-index: 2000;
+      padding: 60px;
+      text-align: center;
+    }
+
+    .voice-orb {
+      width: 100px;
+      height: 100px;
+      border-radius: 50%;
+      background: radial-gradient(circle, var(--accent) 0%, rgba(255, 153, 0, 0.2) 70%);
+      box-shadow: 0 0 50px var(--accent-glow);
+      animation: pulse 1.5s infinite alternate;
+      margin-bottom: 30px;
+    }
+
+    @keyframes pulse {
+      0% { transform: scale(0.9); box-shadow: 0 0 20px var(--accent-glow); }
+      100% { transform: scale(1.15); box-shadow: 0 0 70px var(--accent-glow); }
+    }
+
+    .voice-status {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--accent);
+      margin-bottom: 15px;
+    }
+
+    .voice-text {
+      font-size: 32px;
+      color: var(--text-main);
+      max-width: 1000px;
+      line-height: 1.4;
+    }
+
     /* SCREENSAVER OVERLAY */
     #screensaver {
       position: fixed;
@@ -270,10 +319,10 @@
     <div class="brand">
       <div class="brand-logo"></div>
       <div class="brand-title">CampusDash TV</div>
-      <span class="brand-badge">Fire OS & Vega OS Ready</span>
+      <span class="brand-badge">Fire OS & Gemini AI Active</span>
     </div>
-    <div class="alexa-bar" onclick="triggerAlexaPrompt()">
-      <span>🎙️ Alexa Voice Command (Press 'V')</span>
+    <div class="alexa-bar" onclick="startGeminiVoiceAssistant()">
+      <span id="alexaStatusText">🎙️ Gemini Voice AI Assistant (Press 'V' or Click)</span>
     </div>
     <div class="status-widgets">
       <span>Kanpur • 24°C Clear</span>
@@ -369,9 +418,17 @@
   <footer class="remote-dock">
     <div class="dock-item"><span class="key-cap">▲ ▼ ◀ ▶</span> Navigate</div>
     <div class="dock-item"><span class="key-cap">ENTER</span> Select / Action</div>
-    <div class="dock-item"><span class="key-cap">V</span> Alexa Voice</div>
+    <div class="dock-item"><span class="key-cap">V</span> Gemini Voice AI</div>
+    <div class="dock-item" onclick="setApiKey()"><span class="key-cap">K</span> Set API Key</div>
     <div class="dock-item"><span class="key-cap">S</span> Screensaver</div>
   </footer>
+
+  <!-- GEMINI VOICE AI OVERLAY -->
+  <div id="voiceOverlay" onclick="closeVoiceOverlay()">
+    <div class="voice-orb"></div>
+    <div class="voice-status" id="voiceStatusTitle">🎙️ Gemini AI Listening...</div>
+    <div class="voice-text" id="voiceTextContent">Speak your question or voice command now</div>
+  </div>
 
   <!-- SCREENSAVER OVERLAY -->
   <div id="screensaver" onclick="closeScreensaver()">
@@ -380,12 +437,15 @@
   </div>
 
   <script>
-    // GLOBAL APP STATE
+    // GLOBAL STATE
     let currentIndex = 0;
     const cards = document.querySelectorAll('.card');
     const themes = ['', 'theme-navy', 'theme-oled', 'theme-cyan'];
     const themeNames = ['Amazon Amber', 'Slate Navy', 'OLED Black', 'Midnight Cyan'];
     let currentThemeIdx = 0;
+
+    // GEMINI API KEY STORE
+    let geminiApiKey = localStorage.getItem('GEMINI_API_KEY') || '';
 
     // QUIZ DATA
     const quizData = [
@@ -403,7 +463,7 @@
     let focusAudioCtx = null;
     let noiseNode = null;
 
-    // 1. CLOCK UPDATE
+    // CLOCK
     function updateClock() {
       const now = new Date();
       const timeStr = now.toLocaleTimeString();
@@ -413,7 +473,7 @@
     setInterval(updateClock, 1000);
     updateClock();
 
-    // 2. WEB AUDIO SFX (LATENCY-FREE CLICK SOUND)
+    // SFX
     function playClickSFX() {
       try {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -430,7 +490,7 @@
       } catch (e) {}
     }
 
-    // 3. SPEECH SYNTHESIS (ALEXA VOICE FEEDBACK)
+    // SPEECH SYNTHESIS
     function speakResponse(text) {
       if ('speechSynthesis' in window) {
         window.speechSynthesis.cancel();
@@ -441,7 +501,7 @@
       }
     }
 
-    // 4. AMBIENT RAIN FOCUS AUDIO GENERATOR
+    // AMBIENT RAIN SOUND
     function toggleAmbientFocusSound(enable) {
       if (enable) {
         if (focusAudioCtx) return;
@@ -449,15 +509,13 @@
         const bufferSize = focusAudioCtx.sampleRate * 2;
         const buffer = focusAudioCtx.createBuffer(1, bufferSize, focusAudioCtx.sampleRate);
         const output = buffer.getChannelData(0);
-        
         let lastOut = 0.0;
         for (let i = 0; i < bufferSize; i++) {
           const white = Math.random() * 2 - 1;
           output[i] = (lastOut + (0.02 * white)) / 1.02;
           lastOut = output[i];
-          output[i] *= 0.12; // Soft volume
+          output[i] *= 0.12;
         }
-        
         noiseNode = focusAudioCtx.createBufferSource();
         noiseNode.buffer = buffer;
         noiseNode.loop = true;
@@ -476,7 +534,7 @@
       }
     }
 
-    // 5. FETCH INITIAL DATA FROM EXPRESS REST API
+    // REST DATA FETCH
     async function loadData() {
       try {
         const res = await fetch('/api/data');
@@ -486,9 +544,7 @@
           renderAttendance(json.data.attendance);
           renderExam(json.data.exam);
         }
-      } catch (err) {
-        console.log("Using fallback initial state");
-      }
+      } catch (err) {}
     }
 
     function renderNotes(notes) {
@@ -509,7 +565,6 @@
       document.getElementById('examTitle').innerText = exam.title;
     }
 
-    // API ACTION CALLS
     async function promptAddNote() {
       const text = prompt("📝 Add new study note:");
       if (!text) return;
@@ -546,7 +601,6 @@
       } catch (err) {}
     }
 
-    // POMODORO TOGGLE
     function togglePomodoro() {
       if (pomoRunning) {
         clearInterval(pomoInterval);
@@ -572,7 +626,6 @@
       }
     }
 
-    // QUIZ CONTROL
     function nextQuizQuestion() {
       if (!showingAnswer) {
         document.getElementById('quizAnswer').innerText = quizData[quizIdx].a;
@@ -585,43 +638,122 @@
       }
     }
 
-    // THEME CYCLING
     function cycleTheme() {
       currentThemeIdx = (currentThemeIdx + 1) % themes.length;
       document.body.className = themes[currentThemeIdx];
       document.getElementById('themeName').innerText = themeNames[currentThemeIdx];
     }
 
-    // ALEXA PROMPT
-    function triggerAlexaPrompt() {
-      const cmd = prompt("🎙️ Alexa Voice Command:\nType 'theme', 'note', 'timer', or 'screensaver':");
-      if (!cmd) return;
-      const lower = cmd.toLowerCase().trim();
-      if (lower.includes('theme')) {
-        cycleTheme();
-        speakResponse("Theme changed successfully.");
-      } else if (lower.includes('note')) {
-        promptAddNote();
-        speakResponse("Note added to dashboard.");
-      } else if (lower.includes('timer')) {
-        togglePomodoro();
-        speakResponse("Pomodoro focus timer toggled.");
-      } else if (lower.includes('screensaver')) {
-        openScreensaver();
-      } else {
-        speakResponse("Command not recognized.");
+    // SET GEMINI API KEY
+    function setApiKey() {
+      const key = prompt("🗝️ Enter your Gemini API Key:", geminiApiKey);
+      if (key !== null) {
+        geminiApiKey = key.trim();
+        localStorage.setItem('GEMINI_API_KEY', geminiApiKey);
+        alert(geminiApiKey ? "Gemini API Key saved!" : "API Key cleared.");
       }
     }
 
-    // SCREENSAVER
+    // GEMINI VOICE / TEXT ASSISTANT
+   function startGeminiVoiceAssistant() {
+  if (!geminiApiKey) {
+    setApiKey();
+    if (!geminiApiKey) return;
+  }
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  if (!SpeechRecognition) {
+    const userPrompt = prompt("🎙️ Ask Gemini AI (Type query):");
+    if (userPrompt) askGemini(userPrompt);
+    return;
+  }
+
+  try {
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'en-US';
+    recognition.interimResults = false;
+
+    showVoiceOverlay("🎙️ Gemini Listening...", "Speak your command or question into the microphone...");
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      showVoiceOverlay("🤔 Gemini Thinking...", `"${transcript}"`);
+      askGemini(transcript);
+    };
+
+    recognition.onerror = (err) => {
+      console.warn("Speech Recognition unavailable/denied:", err);
+      closeVoiceOverlay(); // Instantly closes overlay so it never gets stuck
+      setTimeout(() => {
+        const userPrompt = prompt("🎙️ Ask Gemini AI (Type query):");
+        if (userPrompt) askGemini(userPrompt);
+      }, 100);
+    };
+
+    recognition.start();
+  } catch (e) {
+    closeVoiceOverlay();
+    const userPrompt = prompt("🎙️ Ask Gemini AI (Type query):");
+    if (userPrompt) askGemini(userPrompt);
+  }
+}
+
+    async function askGemini(promptText) {
+      const lower = promptText.toLowerCase();
+      
+      // Dashboard Action Shortcuts
+      if (lower.includes('theme')) {
+        cycleTheme();
+        showVoiceOverlay("🎨 Theme Changed", "Switched color theme!");
+        speakResponse("Theme changed successfully.");
+        setTimeout(closeVoiceOverlay, 2000);
+        return;
+      } else if (lower.includes('timer') || lower.includes('pomodoro')) {
+        togglePomodoro();
+        showVoiceOverlay("🍅 Focus Timer", "Pomodoro timer toggled.");
+        speakResponse("Pomodoro focus timer toggled.");
+        setTimeout(closeVoiceOverlay, 2000);
+        return;
+      }
+
+      // Gemini REST Request
+      try {
+        const res = await fetch('/api/assistant', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: promptText, apiKey: geminiApiKey })
+        });
+        const data = await res.json();
+        const reply = data.reply || "No response generated.";
+
+        showVoiceOverlay("💡 Gemini AI Response", reply);
+        speakResponse(reply);
+      } catch (err) {
+        showVoiceOverlay("⚠️ Error", "Unable to connect to server.");
+      }
+    }
+
+    function showVoiceOverlay(title, text) {
+      document.getElementById('voiceStatusTitle').innerText = title;
+      document.getElementById('voiceTextContent').innerText = text;
+      document.getElementById('voiceOverlay').style.display = 'flex';
+    }
+
+    function closeVoiceOverlay() {
+      document.getElementById('voiceOverlay').style.display = 'none';
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    }
+
     function openScreensaver() {
       document.getElementById('screensaver').style.display = 'flex';
     }
+
     function closeScreensaver() {
       document.getElementById('screensaver').style.display = 'none';
     }
 
-    // 6. SPATIAL D-PAD REMOTE NAVIGATION MATRIX (3x2 GRID)
+    // SPATIAL D-PAD REMOTE NAVIGATION MATRIX
     function updateFocus(newIndex) {
       cards[currentIndex].classList.remove('focused');
       currentIndex = newIndex;
@@ -629,43 +761,60 @@
       playClickSFX();
     }
 
-    document.addEventListener('keydown', (e) => {
-      if (document.getElementById('screensaver').style.display === 'flex') {
-        closeScreensaver();
-        return;
-      }
+  document.addEventListener('keydown', (e) => {
+  // Dismiss screensaver or voice overlay on any key press
+  if (document.getElementById('screensaver').style.display === 'flex') {
+    closeScreensaver();
+    return;
+  }
+  if (document.getElementById('voiceOverlay').style.display === 'flex') {
+    closeVoiceOverlay();
+    return;
+  }
 
-      switch (e.key) {
-        case 'ArrowRight':
-          e.preventDefault();
-          if (currentIndex % 3 < 2) updateFocus(currentIndex + 1);
-          break;
-        case 'ArrowLeft':
-          e.preventDefault();
-          if (currentIndex % 3 > 0) updateFocus(currentIndex - 1);
-          break;
-        case 'ArrowDown':
-          e.preventDefault();
-          if (currentIndex + 3 < cards.length) updateFocus(currentIndex + 3);
-          break;
-        case 'ArrowUp':
-          e.preventDefault();
-          if (currentIndex - 3 >= 0) updateFocus(currentIndex - 3);
-          break;
-        case 'Enter':
-          e.preventDefault();
-          cards[currentIndex].click();
-          break;
-        case 'v':
-        case 'V':
-          triggerAlexaPrompt();
-          break;
-        case 's':
-        case 'S':
-          openScreensaver();
-          break;
-      }
-    });
+  const key = e.key.toLowerCase();
+
+  if (key === 'v') {
+    e.preventDefault();
+    startGeminiVoiceAssistant();
+    return;
+  }
+
+  if (key === 'k') {
+    e.preventDefault();
+    setApiKey();
+    return;
+  }
+
+  if (key === 's') {
+    e.preventDefault();
+    openScreensaver();
+    return;
+  }
+
+  switch (e.key) {
+    case 'ArrowRight':
+      e.preventDefault();
+      if (currentIndex % 3 < 2) updateFocus(currentIndex + 1);
+      break;
+    case 'ArrowLeft':
+      e.preventDefault();
+      if (currentIndex % 3 > 0) updateFocus(currentIndex - 1);
+      break;
+    case 'ArrowDown':
+      e.preventDefault();
+      if (currentIndex + 3 < cards.length) updateFocus(currentIndex + 3);
+      break;
+    case 'ArrowUp':
+      e.preventDefault();
+      if (currentIndex - 3 >= 0) updateFocus(currentIndex - 3);
+      break;
+    case 'Enter':
+      e.preventDefault();
+      cards[currentIndex].click();
+      break;
+  }
+});
 
     // INIT
     loadData();
