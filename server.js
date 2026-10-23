@@ -8,7 +8,6 @@ const app = express();
 const PORT = Number(process.env.PORT) || 5000;
 const DATA_DIR = path.resolve(process.env.DATA_DIR || __dirname);
 const DATA_FILE = path.join(DATA_DIR, "data.json");
-const MODEL = "gemini-1.5-flash";
 const DEFAULT_DATA = {
   notes: [
     "Revise C Pointers & Memory Allocation",
@@ -143,44 +142,78 @@ app.post("/api/exam", (req, res) => {
 });
 
 app.post("/api/gemini", async (req, res) => {
-  const userPrompt = req.body && (req.body.prompt || req.body.message || req.body.query);
-  if (typeof userPrompt !== "string" || !userPrompt.trim()) return res.status(400).json({ reply: "Please provide a question for Gemini." });
-  if (userPrompt.length > 12000) return res.status(400).json({ reply: "Please keep the question under 12,000 characters." });
   const apiKey = String(process.env.GEMINI_API_KEY || "").trim() || String((req.body && req.body.apiKey) || "").trim();
-  if (!apiKey) return res.status(503).json({ reply: "Gemini is not configured. Add GEMINI_API_KEY in Render." });
-  if (typeof fetch !== "function") return res.status(500).json({ reply: "This server requires Node.js 18 or newer for fetch." });
+  if (!apiKey) return res.status(400).json({ reply: "Gemini API key is missing. Set GEMINI_API_KEY in Render or provide apiKey." });
+
+  const userPrompt = req.body && (req.body.prompt || req.body.message || req.body.query);
+  if (typeof userPrompt !== "string" || !userPrompt.trim()) {
+    return res.status(400).json({ reply: "Please provide a question for Gemini." });
+  }
+  if (userPrompt.length > 12000) {
+    return res.status(400).json({ reply: "Please keep the question under 12,000 characters." });
+  }
+  if (typeof fetch !== "function") {
+    return res.status(500).json({ reply: "This server requires Node.js 18 or newer for fetch." });
+  }
+
   const candidates = [
-    { model: "gemini-3.8-flash", version: "v1beta" },
-    { model: "gemini-2.5-flash", version: "v1beta" }
+    { name: "gemini-2.5-flash", version: "v1beta" },
+    { name: "gemini-1.5-flash", version: "v1" },
+    { name: "gemini-2.0-flash", version: "v1beta" }
   ];
-  const textPrompt = "You are CampusDash TV Voice Assistant. Keep your response brief, clear, conversational, and under 2-3 sentences. Question: " + userPrompt.trim();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
+  const wrappedPrompt = "You are CampusDash TV Voice Assistant. Keep your response brief, clear, conversational, and under 2-3 sentences. Question: " + userPrompt.trim();
   let lastStatus = 502;
-  let fallback = "Gemini is busy right now. Please try again in a moment.";
-  try {
-    for (const candidate of candidates) {
-      const model = candidate.model;
-      const version = candidate.version;
-        try {
-          const url = "https://generativelanguage.googleapis.com/" + version + "/models/" + model + ":generateContent?key=" + encodeURIComponent(apiKey);
-          const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: textPrompt }] }], generationConfig: { maxOutputTokens: 150, temperature: 0.7 } }), signal: controller.signal });
-          const data = await response.json().catch(() => ({}));
-          if (!response.ok) { lastStatus = response.status; fallback = data.error && data.error.message || fallback; console.error("Gemini candidate " + version + "/" + model + " failed with HTTP " + response.status + ": " + fallback); continue; }
-          const text = (data.candidates || []).flatMap((candidate) => candidate.content && candidate.content.parts || []).map((part) => part.text || "").join("").trim();
-          if (text) return res.json({ reply: text });
-        } catch (error) {
-          if (error.name === "AbortError") { lastStatus = 504; break; }
-          fallback = "Could not connect to Gemini. Please try again in a moment.";
-        }
-      if (controller.signal.aborted) break;
+  let lastError = "No Gemini model returned a response.";
+
+  for (const candidate of candidates) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    try {
+      const url = "https://generativelanguage.googleapis.com/" + candidate.version + "/models/" + candidate.name + ":generateContent?key=" + encodeURIComponent(apiKey);
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: wrappedPrompt }] }],
+          generationConfig: { maxOutputTokens: 150, temperature: 0.7 }
+        }),
+        signal: controller.signal
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        lastStatus = response.status;
+        lastError = data.error && data.error.message || "Gemini returned HTTP " + response.status + ".";
+        console.error("Gemini " + candidate.version + "/" + candidate.name + " failed (HTTP " + response.status + "):", lastError);
+        if (response.status === 400 || response.status === 401 || response.status === 403) break;
+        continue;
+      }
+      const text = (data.candidates || [])
+        .flatMap((item) => item.content && item.content.parts || [])
+        .map((part) => part.text || "")
+        .join("")
+        .trim();
+      if (text) return res.json({ reply: text });
+      lastStatus = 502;
+      lastError = "Gemini returned an empty response.";
+    } catch (error) {
+      if (error && error.name === "AbortError") {
+        lastStatus = 504;
+        lastError = candidate.name + " timed out after 3 seconds.";
+        console.warn(lastError + " Trying the next model.");
+      } else {
+        lastStatus = 502;
+        lastError = error.message || "Could not connect to Gemini.";
+        console.error("Gemini request failed for " + candidate.name + ":", lastError);
+      }
+    } finally {
+      clearTimeout(timeout);
     }
-    if (lastStatus === 429) return res.status(200).json({ reply: "Gemini API rate limit or quota reached (429). Check your Google AI Studio quota and retry later." });
-    if (lastStatus === 503) return res.status(200).json({ reply: "Gemini is temporarily unavailable (503). Please retry in a moment." });
-    if (lastStatus === 504) return res.status(200).json({ reply: "Gemini request timed out (504). Please retry." });
-    console.error("All Gemini model candidates failed:", fallback);
-    return res.status(502).json({ reply: "No available Gemini model responded. Confirm GEMINI_API_KEY is valid and has access to gemini-3.8-flash." });
-  } finally { clearTimeout(timeout); }
+  }
+
+  if (lastStatus === 429) return res.status(200).json({ reply: "Gemini rate limit or quota reached. Check your Google AI Studio quota and retry later." });
+  if (lastStatus === 503) return res.status(200).json({ reply: "Gemini is temporarily unavailable. Please retry shortly." });
+  if (lastStatus === 504) return res.status(200).json({ reply: "Gemini models did not respond within 3 seconds each. Please retry." });
+  return res.status(502).json({ reply: "No available Gemini model responded: " + lastError });
 });
 app.use("/api", (req, res) => {
   res.status(404).json({ success: false, error: "API route not found." });
@@ -199,6 +232,7 @@ app.use((error, req, res, next) => {
 app.listen(PORT, () => {
   console.log("CampusDash TV server listening on port " + PORT);
 });
+
 
 
 
