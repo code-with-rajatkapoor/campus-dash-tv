@@ -8,7 +8,7 @@ const app = express();
 const PORT = Number(process.env.PORT) || 5000;
 const DATA_DIR = path.resolve(process.env.DATA_DIR || __dirname);
 const DATA_FILE = path.join(DATA_DIR, "data.json");
-const MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+const MODEL = "gemini-1.5-flash";
 const DEFAULT_DATA = {
   notes: [
     "Revise C Pointers & Memory Allocation",
@@ -169,16 +169,16 @@ app.post("/api/gemini", async (req, res) => {
   const timeout = setTimeout(() => controller.abort(), 30000);
   try {
     const apiResponse = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(MODEL) + ":generateContent",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + encodeURIComponent(apiKey),
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-goog-api-key": apiKey
+          
         },
         body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: prompt.trim() }] }],
-          generationConfig: { maxOutputTokens: 700, temperature: 0.7 }
+          contents: [{ role: "user", parts: [{ text: "You are CampusDash TV Voice Assistant. Keep your response brief, clear, conversational, and under 2-3 sentences. Question: " + prompt.trim() }] }],
+          generationConfig: { maxOutputTokens: 150, temperature: 0.7 }
         }),
         signal: controller.signal
       }
@@ -187,7 +187,8 @@ app.post("/api/gemini", async (req, res) => {
     if (!apiResponse.ok) {
       const providerMessage = payload.error && payload.error.message;
       console.error("Gemini API returned HTTP " + apiResponse.status + ":", providerMessage || "No provider message");
-      return res.status(apiResponse.status === 429 ? 429 : 502).json({
+      if (apiResponse.status === 429 || apiResponse.status === 503) { return res.status(200).json({ success: true, reply: "Gemini is busy right now. Please try again in a moment." }); }
+      return res.status(502).json({
         success: false,
         reply: providerMessage || "Gemini could not complete the request. Check the API key and model configuration."
       });
@@ -218,8 +219,8 @@ app.use("/api", (req, res) => {
   res.status(404).json({ success: false, error: "API route not found." });
 });
 
-app.get(/.*/, (req, res) => {
-  res.sendFile(path.join(PUBLIC_DIR, "index.html"));
+app.use((req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 app.use((error, req, res, next) => {
@@ -233,3 +234,6 @@ app.use((error, req, res, next) => {
 app.listen(PORT, () => {
   console.log("CampusDash TV server listening on port " + PORT);
 });
+
+
+
