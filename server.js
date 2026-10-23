@@ -39,6 +39,7 @@ function normalizeData(value) {
       total: sum.total + Math.max(0, Number(subject && subject.total) || 0)
     }), { attended: 0, total: 0 });
   }
+
   const attended = Math.max(0, Math.floor(Number(attendance && attendance.attended) || 0));
   const total = Math.max(attended, Math.floor(Number(attendance && attendance.total) || 0));
 
@@ -61,6 +62,7 @@ function loadData() {
   } catch (error) {
     console.error("Could not read data.json; using default dashboard data:", error.message);
   }
+
   return normalizeData(DEFAULT_DATA);
 }
 
@@ -98,6 +100,7 @@ app.post("/api/data", (req, res) => {
 app.post("/api/notes", (req, res) => {
   const issue = validateText(req.body && req.body.text, "Note", 500);
   if (issue) return res.status(400).json({ success: false, error: issue });
+
   try {
     const data = loadData();
     data.notes.push(req.body.text.trim());
@@ -125,11 +128,13 @@ app.post("/api/attendance", (req, res) => {
 app.post("/api/exam", (req, res) => {
   const issue = validateText(req.body && req.body.title, "Exam title", 160);
   if (issue) return res.status(400).json({ success: false, error: issue });
+
   const suppliedTarget = req.body && req.body.target;
   const targetDate = new Date(suppliedTarget || loadData().exam.target);
   if (Number.isNaN(targetDate.getTime())) {
     return res.status(400).json({ success: false, error: "Exam date must be a valid date." });
   }
+
   try {
     const data = loadData();
     data.exam = { title: req.body.title.trim(), target: targetDate.toISOString() };
@@ -142,8 +147,14 @@ app.post("/api/exam", (req, res) => {
 });
 
 app.post("/api/gemini", async (req, res) => {
-  const apiKey = String(process.env.GEMINI_API_KEY || "").trim() || String((req.body && req.body.apiKey) || "").trim();
-  if (!apiKey) return res.status(400).json({ reply: "Gemini API key is missing. Set GEMINI_API_KEY in Render or provide apiKey." });
+  const apiKey = String(process.env.GEMINI_API_KEY || "").trim()
+    || String((req.body && req.body.apiKey) || "").trim();
+
+  if (!apiKey) {
+    return res.status(400).json({
+      reply: "Gemini API key is missing. Set GEMINI_API_KEY in Render or provide apiKey."
+    });
+  }
 
   const userPrompt = req.body && (req.body.prompt || req.body.message || req.body.query);
   if (typeof userPrompt !== "string" || !userPrompt.trim()) {
@@ -157,19 +168,31 @@ app.post("/api/gemini", async (req, res) => {
   }
 
   const candidates = [
-    { name: "gemini-2.5-flash", version: "v1beta" },
-    { name: "gemini-1.5-flash", version: "v1" },
-    { name: "gemini-2.0-flash", version: "v1beta" }
+    { name: "gemini-3.8-flash", version: "v1beta" },
+    { name: "gemini-3.5-flash-lite", version: "v1beta" },
+    { name: "gemini-3.8-flash", version: "v1" }
   ];
-  const wrappedPrompt = "You are CampusDash TV Voice Assistant. Keep your response brief, clear, conversational, and under 2-3 sentences. Question: " + userPrompt.trim();
+
+  const wrappedPrompt =
+    "You are CampusDash TV Voice Assistant. Keep your response brief, clear, conversational, and under 2-3 sentences. Question: "
+    + userPrompt.trim();
+
   let lastStatus = 502;
   let lastError = "No Gemini model returned a response.";
 
   for (const candidate of candidates) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
+    const timeout = setTimeout(() => controller.abort(), 4000);
+
     try {
-      const url = "https://generativelanguage.googleapis.com/" + candidate.version + "/models/" + candidate.name + ":generateContent?key=" + encodeURIComponent(apiKey);
+      const url =
+        "https://generativelanguage.googleapis.com/"
+        + candidate.version
+        + "/models/"
+        + candidate.name
+        + ":generateContent?key="
+        + encodeURIComponent(apiKey);
+
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -179,26 +202,37 @@ app.post("/api/gemini", async (req, res) => {
         }),
         signal: controller.signal
       });
+
       const data = await response.json().catch(() => ({}));
+
       if (!response.ok) {
         lastStatus = response.status;
-        lastError = data.error && data.error.message || "Gemini returned HTTP " + response.status + ".";
-        console.error("Gemini " + candidate.version + "/" + candidate.name + " failed (HTTP " + response.status + "):", lastError);
-        if (response.status === 400 || response.status === 401 || response.status === 403) break;
+        lastError = (data.error && data.error.message)
+          || "Gemini returned HTTP " + response.status + ".";
+        console.error(
+          "Gemini " + candidate.version + "/" + candidate.name
+          + " failed (HTTP " + response.status + "):",
+          lastError
+        );
+
+        if ([400, 401, 403].includes(response.status)) break;
         continue;
       }
+
       const text = (data.candidates || [])
-        .flatMap((item) => item.content && item.content.parts || [])
+        .flatMap((item) => (item.content && item.content.parts) || [])
         .map((part) => part.text || "")
         .join("")
         .trim();
+
       if (text) return res.json({ reply: text });
+
       lastStatus = 502;
       lastError = "Gemini returned an empty response.";
     } catch (error) {
       if (error && error.name === "AbortError") {
         lastStatus = 504;
-        lastError = candidate.name + " timed out after 3 seconds.";
+        lastError = candidate.name + " timed out after 4 seconds.";
         console.warn(lastError + " Trying the next model.");
       } else {
         lastStatus = 502;
@@ -210,11 +244,21 @@ app.post("/api/gemini", async (req, res) => {
     }
   }
 
-  if (lastStatus === 429) return res.status(200).json({ reply: "Gemini rate limit or quota reached. Check your Google AI Studio quota and retry later." });
-  if (lastStatus === 503) return res.status(200).json({ reply: "Gemini is temporarily unavailable. Please retry shortly." });
-  if (lastStatus === 504) return res.status(200).json({ reply: "Gemini models did not respond within 3 seconds each. Please retry." });
+  if (lastStatus === 429) {
+    return res.status(200).json({
+      reply: "Gemini rate limit or quota reached. Check your Google AI Studio quota and retry later."
+    });
+  }
+  if (lastStatus === 503) {
+    return res.status(200).json({ reply: "Gemini is temporarily unavailable. Please retry shortly." });
+  }
+  if (lastStatus === 504) {
+    return res.status(200).json({ reply: "Gemini models did not respond within 4 seconds each. Please retry." });
+  }
+
   return res.status(502).json({ reply: "No available Gemini model responded: " + lastError });
 });
+
 app.use("/api", (req, res) => {
   res.status(404).json({ success: false, error: "API route not found." });
 });
@@ -232,12 +276,3 @@ app.use((error, req, res, next) => {
 app.listen(PORT, () => {
   console.log("CampusDash TV server listening on port " + PORT);
 });
-
-
-
-
-
-
-
-
-
