@@ -54,4 +54,7 @@ An executive, glassmorphic student command center built for 1080p Smart TVs, Fir
 Navigate to http://localhost:5000 (or http://localhost:3000). Press F11 for true fullscreen mode.
 
 📄 License
-Distributed under the MIT License. Built for hackathon demonstration.       
+Distributed under the MIT License. Built for hackathon demonstration.   \
+
+![CampusDash TV Preview]<img width="1920" height="1080" alt="screen" src="https://github.com/user-attachments/assets/70dc344f-f751-4bf3-a685-e7f12fda5072" />
+
