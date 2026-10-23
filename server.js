@@ -150,10 +150,8 @@ app.post("/api/gemini", async (req, res) => {
   if (!apiKey) return res.status(503).json({ reply: "Gemini is not configured. Add GEMINI_API_KEY in Render." });
   if (typeof fetch !== "function") return res.status(500).json({ reply: "This server requires Node.js 18 or newer for fetch." });
   const candidates = [
-    { model: "gemini-2.5-flash", version: "v1beta" },
-    { model: "gemini-2.0-flash", version: "v1beta" },
-    { model: "gemini-1.5-flash", version: "v1" },
-    { model: "gemini-1.5-pro", version: "v1" }
+    { model: "gemini-3.8-flash", version: "v1beta" },
+    { model: "gemini-2.5-flash", version: "v1beta" }
   ];
   const textPrompt = "You are CampusDash TV Voice Assistant. Keep your response brief, clear, conversational, and under 2-3 sentences. Question: " + userPrompt.trim();
   const controller = new AbortController();
@@ -178,7 +176,8 @@ app.post("/api/gemini", async (req, res) => {
       if (controller.signal.aborted) break;
     }
     if (lastStatus === 429 || lastStatus === 503 || lastStatus === 504) return res.status(200).json({ reply: "Gemini is busy right now. Please try again in a moment." });
-    return res.status(502).json({ reply: fallback });
+    console.error("All Gemini model candidates failed:", fallback);
+    return res.status(502).json({ reply: "No available Gemini model responded. Confirm GEMINI_API_KEY is valid and has access to gemini-3.8-flash." });
   } finally { clearTimeout(timeout); }
 });
 app.use("/api", (req, res) => {
@@ -198,6 +197,8 @@ app.use((error, req, res, next) => {
 app.listen(PORT, () => {
   console.log("CampusDash TV server listening on port " + PORT);
 });
+
+
 
 
 
