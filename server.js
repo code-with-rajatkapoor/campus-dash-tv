@@ -166,7 +166,7 @@ app.post("/api/gemini", async (req, res) => {
           const url = "https://generativelanguage.googleapis.com/" + version + "/models/" + model + ":generateContent?key=" + encodeURIComponent(apiKey);
           const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: textPrompt }] }], generationConfig: { maxOutputTokens: 150, temperature: 0.7 } }), signal: controller.signal });
           const data = await response.json().catch(() => ({}));
-          if (!response.ok) { lastStatus = response.status; fallback = data.error && data.error.message || fallback; continue; }
+          if (!response.ok) { lastStatus = response.status; fallback = data.error && data.error.message || fallback; console.error("Gemini candidate " + version + "/" + model + " failed with HTTP " + response.status + ": " + fallback); continue; }
           const text = (data.candidates || []).flatMap((candidate) => candidate.content && candidate.content.parts || []).map((part) => part.text || "").join("").trim();
           if (text) return res.json({ reply: text });
         } catch (error) {
@@ -175,7 +175,9 @@ app.post("/api/gemini", async (req, res) => {
         }
       if (controller.signal.aborted) break;
     }
-    if (lastStatus === 429 || lastStatus === 503 || lastStatus === 504) return res.status(200).json({ reply: "Gemini is busy right now. Please try again in a moment." });
+    if (lastStatus === 429) return res.status(200).json({ reply: "Gemini API rate limit or quota reached (429). Check your Google AI Studio quota and retry later." });
+    if (lastStatus === 503) return res.status(200).json({ reply: "Gemini is temporarily unavailable (503). Please retry in a moment." });
+    if (lastStatus === 504) return res.status(200).json({ reply: "Gemini request timed out (504). Please retry." });
     console.error("All Gemini model candidates failed:", fallback);
     return res.status(502).json({ reply: "No available Gemini model responded. Confirm GEMINI_API_KEY is valid and has access to gemini-3.8-flash." });
   } finally { clearTimeout(timeout); }
@@ -197,6 +199,7 @@ app.use((error, req, res, next) => {
 app.listen(PORT, () => {
   console.log("CampusDash TV server listening on port " + PORT);
 });
+
 
 
 
