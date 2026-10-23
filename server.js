@@ -149,16 +149,21 @@ app.post("/api/gemini", async (req, res) => {
   const apiKey = String(process.env.GEMINI_API_KEY || "").trim() || String((req.body && req.body.apiKey) || "").trim();
   if (!apiKey) return res.status(503).json({ reply: "Gemini is not configured. Add GEMINI_API_KEY in Render." });
   if (typeof fetch !== "function") return res.status(500).json({ reply: "This server requires Node.js 18 or newer for fetch." });
-  const models = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"];
-  const versions = ["v1", "v1beta"];
+  const candidates = [
+    { model: "gemini-2.5-flash", version: "v1beta" },
+    { model: "gemini-2.0-flash", version: "v1beta" },
+    { model: "gemini-1.5-flash", version: "v1" },
+    { model: "gemini-1.5-pro", version: "v1" }
+  ];
   const textPrompt = "You are CampusDash TV Voice Assistant. Keep your response brief, clear, conversational, and under 2-3 sentences. Question: " + userPrompt.trim();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
   let lastStatus = 502;
   let fallback = "Gemini is busy right now. Please try again in a moment.";
   try {
-    for (const model of models) {
-      for (const version of versions) {
+    for (const candidate of candidates) {
+      const model = candidate.model;
+      const version = candidate.version;
         try {
           const url = "https://generativelanguage.googleapis.com/" + version + "/models/" + model + ":generateContent?key=" + encodeURIComponent(apiKey);
           const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: textPrompt }] }], generationConfig: { maxOutputTokens: 150, temperature: 0.7 } }), signal: controller.signal });
@@ -170,7 +175,6 @@ app.post("/api/gemini", async (req, res) => {
           if (error.name === "AbortError") { lastStatus = 504; break; }
           fallback = "Could not connect to Gemini. Please try again in a moment.";
         }
-      }
       if (controller.signal.aborted) break;
     }
     if (lastStatus === 429 || lastStatus === 503 || lastStatus === 504) return res.status(200).json({ reply: "Gemini is busy right now. Please try again in a moment." });
@@ -194,6 +198,7 @@ app.use((error, req, res, next) => {
 app.listen(PORT, () => {
   console.log("CampusDash TV server listening on port " + PORT);
 });
+
 
 
 
