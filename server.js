@@ -1,4 +1,3 @@
-
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
@@ -50,7 +49,7 @@ app.post('/api/data', (req, res) => {
   res.json({ success: true, data: req.body });
 });
 
-// Gemini AI route (No hardcoded keyword fallbacks)
+// Gemini AI route
 app.post('/api/gemini', async (req, res) => {
   try {
     const userPrompt = req.body.prompt || req.body.message || req.body.query;
@@ -66,7 +65,6 @@ app.post('/api/gemini', async (req, res) => {
       });
     }
 
-    // Call Gemini API dynamically
     const apiResponse = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
       {
@@ -98,8 +96,8 @@ app.post('/api/gemini', async (req, res) => {
   }
 });
 
-// Catch-all route to serve index.html
-app.get('*', (req, res) => {
+// Catch-all middleware fallback for SPA
+app.use((req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
