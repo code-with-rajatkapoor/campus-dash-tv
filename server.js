@@ -1,106 +1,235 @@
-const express = require('express');
-const path = require('path');
-const fs = require('fs');
+"use strict";
+
+const express = require("express");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
-const PORT = process.env.PORT || 5000;
-const DATA_FILE = path.join(__dirname, 'data.json');
+const PORT = Number(process.env.PORT) || 5000;
+const DATA_DIR = path.resolve(process.env.DATA_DIR || __dirname);
+const DATA_FILE = path.join(DATA_DIR, "data.json");
+const MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+const DEFAULT_DATA = {
+  notes: [
+    "Revise C Pointers & Memory Allocation",
+    "Complete CSJMU BCA Assignment"
+  ],
+  attendance: { attended: 30, total: 36 },
+  exam: { title: "CSJMU Mid-Sem Exams", target: "2026-11-15T00:00:00.000Z" }
+};
 
-// Middleware
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+const candidatePublicDir = path.join(__dirname, "public");
+const PUBLIC_DIR = fs.existsSync(path.join(candidatePublicDir, "index.html"))
+  ? candidatePublicDir
+  : __dirname;
 
-// Persistent storage helpers
-function loadData() {
-  if (fs.existsSync(DATA_FILE)) {
-    try {
-      return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-    } catch (err) {
-      console.error("Error reading data.json:", err);
-    }
+app.disable("x-powered-by");
+app.use(express.json({ limit: "32kb" }));
+app.use(express.static(PUBLIC_DIR, { fallthrough: true, index: "index.html" }));
+
+function normalizeData(value) {
+  const data = value && typeof value === "object" ? value : {};
+  const notes = Array.isArray(data.notes)
+    ? data.notes.map((note) => String(note).trim()).filter(Boolean).slice(-100)
+    : DEFAULT_DATA.notes.slice();
+
+  let attendance = data.attendance || DEFAULT_DATA.attendance;
+  if (Array.isArray(attendance)) {
+    attendance = attendance.reduce((sum, subject) => ({
+      attended: sum.attended + Math.max(0, Number(subject && (subject.attended ?? subject.present)) || 0),
+      total: sum.total + Math.max(0, Number(subject && subject.total) || 0)
+    }), { attended: 0, total: 0 });
   }
-  return {
-    notes: [
-      "Revise C Pointers & Memory Management",
-      "Complete CSJMU BCA Assignment"
-    ],
-    attendance: [
-      { subject: "Computer Fundamentals", present: 18, total: 20 },
-      { subject: "C Programming", present: 16, total: 20 }
-    ]
+  const attended = Math.max(0, Math.floor(Number(attendance && attendance.attended) || 0));
+  const total = Math.max(attended, Math.floor(Number(attendance && attendance.total) || 0));
+
+  const suppliedExam = data.exam && typeof data.exam === "object" ? data.exam : {};
+  const targetDate = new Date(suppliedExam.target || DEFAULT_DATA.exam.target);
+  const exam = {
+    title: String(suppliedExam.title || DEFAULT_DATA.exam.title).trim().slice(0, 160) || DEFAULT_DATA.exam.title,
+    target: Number.isNaN(targetDate.getTime()) ? DEFAULT_DATA.exam.target : targetDate.toISOString()
   };
+
+  return { notes, attendance: { attended, total }, exam };
+}
+
+function loadData() {
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+      return normalizeData(parsed);
+    }
+  } catch (error) {
+    console.error("Could not read data.json; using default dashboard data:", error.message);
+  }
+  return normalizeData(DEFAULT_DATA);
 }
 
 function saveData(data) {
-  try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-  } catch (err) {
-    console.error("Error saving data.json:", err);
-  }
+  const normalized = normalizeData(data);
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const tempFile = DATA_FILE + ".tmp";
+  fs.writeFileSync(tempFile, JSON.stringify(normalized, null, 2), "utf8");
+  fs.renameSync(tempFile, DATA_FILE);
+  return normalized;
 }
 
-// Data API routes
-app.get('/api/data', (req, res) => {
-  res.json(loadData());
+function validateText(value, fieldName, maxLength) {
+  if (typeof value !== "string") return fieldName + " must be text.";
+  const text = value.trim();
+  if (!text) return fieldName + " cannot be empty.";
+  if (text.length > maxLength) return fieldName + " must be " + maxLength + " characters or fewer.";
+  return null;
+}
+
+app.get("/api/data", (req, res) => {
+  res.json({ success: true, data: loadData() });
 });
 
-app.post('/api/data', (req, res) => {
-  saveData(req.body);
-  res.json({ success: true, data: req.body });
-});
-
-// Gemini AI route
-app.post('/api/gemini', async (req, res) => {
+app.post("/api/data", (req, res) => {
   try {
-    const userPrompt = req.body.prompt || req.body.message || req.body.query;
-
-    if (!userPrompt) {
-      return res.status(400).json({ reply: "Please provide a query." });
-    }
-
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return res.status(500).json({ 
-        reply: "GEMINI_API_KEY is missing. Please add it to your environment variables." 
-      });
-    }
-
-    const apiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: userPrompt }] }]
-        })
-      }
-    );
-
-    const data = await apiResponse.json();
-
-    if (data.candidates && data.candidates[0]?.content?.parts[0]?.text) {
-      const aiReply = data.candidates[0].content.parts[0].text;
-      return res.json({ reply: aiReply, text: aiReply });
-    } else if (data.error) {
-      console.error("Gemini API Error:", data.error);
-      return res.status(500).json({ 
-        reply: `Gemini Error: ${data.error.message || "Unable to process AI request."}` 
-      });
-    } else {
-      return res.status(500).json({ reply: "Unexpected AI response format." });
-    }
-
-  } catch (err) {
-    console.error("Server Error in /api/gemini:", err);
-    return res.status(500).json({ reply: "Failed to connect to Gemini AI." });
+    const saved = saveData({ ...loadData(), ...(req.body || {}) });
+    res.json({ success: true, data: saved });
+  } catch (error) {
+    console.error("Could not save dashboard data:", error.message);
+    res.status(500).json({ success: false, error: "Could not save dashboard data." });
   }
 });
 
-// Catch-all middleware fallback for SPA
-app.use((req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+app.post("/api/notes", (req, res) => {
+  const issue = validateText(req.body && req.body.text, "Note", 500);
+  if (issue) return res.status(400).json({ success: false, error: issue });
+  try {
+    const data = loadData();
+    data.notes.push(req.body.text.trim());
+    const saved = saveData(data);
+    return res.json({ success: true, notes: saved.notes });
+  } catch (error) {
+    console.error("Could not save note:", error.message);
+    return res.status(500).json({ success: false, error: "Could not save note." });
+  }
+});
+
+app.post("/api/attendance", (req, res) => {
+  try {
+    const data = loadData();
+    data.attendance.attended += 1;
+    data.attendance.total += 1;
+    const saved = saveData(data);
+    return res.json({ success: true, attendance: saved.attendance });
+  } catch (error) {
+    console.error("Could not update attendance:", error.message);
+    return res.status(500).json({ success: false, error: "Could not update attendance." });
+  }
+});
+
+app.post("/api/exam", (req, res) => {
+  const issue = validateText(req.body && req.body.title, "Exam title", 160);
+  if (issue) return res.status(400).json({ success: false, error: issue });
+  const suppliedTarget = req.body && req.body.target;
+  const targetDate = new Date(suppliedTarget || loadData().exam.target);
+  if (Number.isNaN(targetDate.getTime())) {
+    return res.status(400).json({ success: false, error: "Exam date must be a valid date." });
+  }
+  try {
+    const data = loadData();
+    data.exam = { title: req.body.title.trim(), target: targetDate.toISOString() };
+    const saved = saveData(data);
+    return res.json({ success: true, exam: saved.exam });
+  } catch (error) {
+    console.error("Could not update exam:", error.message);
+    return res.status(500).json({ success: false, error: "Could not update exam." });
+  }
+});
+
+app.post("/api/gemini", async (req, res) => {
+  const prompt = req.body && (req.body.prompt || req.body.message || req.body.query);
+  if (typeof prompt !== "string" || !prompt.trim()) {
+    return res.status(400).json({ success: false, reply: "Please provide a question for Gemini." });
+  }
+  if (prompt.length > 12000) {
+    return res.status(400).json({ success: false, reply: "Please keep the question under 12,000 characters." });
+  }
+
+  // Render's server-side secret wins. The request-body fallback supports an optional local key.
+  const serverApiKey = String(process.env.GEMINI_API_KEY || "").trim();
+  const clientApiKey = String((req.body && req.body.apiKey) || "").trim();
+  const apiKey = serverApiKey || clientApiKey;
+  if (!apiKey) {
+    return res.status(503).json({
+      success: false,
+      reply: "Gemini is not configured. Add GEMINI_API_KEY in Render, or set an optional browser key with K."
+    });
+  }
+  if (typeof fetch !== "function") {
+    return res.status(500).json({ success: false, reply: "This server's Node.js version does not provide fetch. Use Node.js 18 or newer." });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  try {
+    const apiResponse = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(MODEL) + ":generateContent",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey
+        },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: prompt.trim() }] }],
+          generationConfig: { maxOutputTokens: 700, temperature: 0.7 }
+        }),
+        signal: controller.signal
+      }
+    );
+    const payload = await apiResponse.json().catch(() => ({}));
+    if (!apiResponse.ok) {
+      const providerMessage = payload.error && payload.error.message;
+      console.error("Gemini API returned HTTP " + apiResponse.status + ":", providerMessage || "No provider message");
+      return res.status(apiResponse.status === 429 ? 429 : 502).json({
+        success: false,
+        reply: providerMessage || "Gemini could not complete the request. Check the API key and model configuration."
+      });
+    }
+
+    const reply = (payload.candidates || [])
+      .flatMap((candidate) => (candidate.content && candidate.content.parts) || [])
+      .map((part) => part.text || "")
+      .join("")
+      .trim();
+    if (!reply) {
+      return res.status(502).json({ success: false, reply: "Gemini returned an empty response. Please try again." });
+    }
+    return res.json({ success: true, reply, text: reply });
+  } catch (error) {
+    const timedOut = error && error.name === "AbortError";
+    console.error("Gemini request failed:", error.message);
+    return res.status(timedOut ? 504 : 502).json({
+      success: false,
+      reply: timedOut ? "Gemini took too long to respond. Please try again." : "Could not connect to Gemini. Please try again."
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
+app.use("/api", (req, res) => {
+  res.status(404).json({ success: false, error: "API route not found." });
+});
+
+app.get(/.*/, (req, res) => {
+  res.sendFile(path.join(PUBLIC_DIR, "index.html"));
+});
+
+app.use((error, req, res, next) => {
+  if (error instanceof SyntaxError && error.status === 400 && "body" in error) {
+    return res.status(400).json({ success: false, error: "Request body must be valid JSON." });
+  }
+  console.error("Unhandled server error:", error);
+  return res.status(500).json({ success: false, error: "Unexpected server error." });
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 CampusDash TV Server running on port ${PORT}`);
+  console.log("CampusDash TV server listening on port " + PORT);
 });
